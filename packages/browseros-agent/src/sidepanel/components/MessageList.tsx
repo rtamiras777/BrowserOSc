@@ -801,27 +801,224 @@ Return ONLY valid JSON, no other text.`
   const handleFullAnalysis = async () => {
     trackFeature('full_analysis')
 
-    // TODO: Implement full analysis functionality
-    // This will be a more comprehensive analysis that:
-    // - Integrates with the agent system
-    // - Performs deeper interaction with the page
-    // - Uses more sophisticated analysis techniques
+    // Prompt user for website URL
+    const websiteUrl = prompt('Please provide the website URL you want to analyze:')
+    if (!websiteUrl || !websiteUrl.trim()) {
+      return
+    }
 
     const msgId = `user_${Date.now()}`
-    upsertMessage({
-      msgId,
-      role: 'user',
-      content: 'Full Analysis (Coming Soon)',
-      ts: Date.now()
-    })
+    upsertMessage({ msgId, role: 'user', content: `Full Analysis: ${websiteUrl}`, ts: Date.now() })
+    setProcessing(true)
 
-    const responseMsgId = `assistant_${Date.now()}`
-    upsertMessage({
-      msgId: responseMsgId,
-      role: 'assistant',
-      content: '🚧 Full Analysis feature is under development.\n\nThis will provide:\n• Agent-driven page interaction\n• Deep content extraction\n• Interactive element analysis\n• Advanced insights and recommendations',
-      ts: Date.now()
-    })
+    try {
+      // Get current tab
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true })
+      const currentTab = tabs[0]
+
+      if (!currentTab?.id || !currentTab.windowId) {
+        throw new Error('No active tab found')
+      }
+
+      // Add status message
+      const statusMsgId = `assistant_${Date.now()}`
+      upsertMessage({
+        msgId: statusMsgId,
+        role: 'assistant',
+        content: `Navigating to website...`,
+        ts: Date.now()
+      })
+
+      // Navigate to website
+      await chrome.tabs.update(currentTab.id, { url: websiteUrl.trim() })
+
+      // Wait for page to load
+      await new Promise<void>((resolve) => {
+        const listener = (tabId: number, changeInfo: chrome.tabs.TabChangeInfo) => {
+          if (tabId === currentTab.id && changeInfo.status === 'complete') {
+            chrome.tabs.onUpdated.removeListener(listener)
+            resolve()
+          }
+        }
+        chrome.tabs.onUpdated.addListener(listener)
+
+        // Timeout after 30 seconds
+        setTimeout(() => {
+          chrome.tabs.onUpdated.removeListener(listener)
+          resolve()
+        }, 30000)
+      })
+
+      // Update status
+      upsertMessage({
+        msgId: statusMsgId,
+        role: 'assistant',
+        content: `Page loaded! Capturing screenshot...`,
+        ts: Date.now()
+      })
+
+      // Small delay after load
+      await new Promise(resolve => setTimeout(resolve, 2000))
+
+      // Capture a single screenshot
+      const screenshot = await chrome.tabs.captureVisibleTab(currentTab.windowId, {
+        format: 'png'
+      })
+
+      upsertMessage({
+        msgId: statusMsgId,
+        role: 'assistant',
+        content: `Screenshot captured! Calling Vision Analysis API...`,
+        ts: Date.now()
+      })
+
+      // Call Flask API
+      const response = await fetch('http://localhost:5000/analyze', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          screenshots: [screenshot]
+        })
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`API error: ${response.status} ${errorText}`)
+      }
+
+      const result = await response.json()
+
+      // Format the structured analysis
+      const analysis = result.analysis
+      let formattedContent = `# ✅ Full Analysis Complete!\n\n`
+      formattedContent += `**URL**: ${websiteUrl}\n`
+      formattedContent += `**Screenshots Analyzed**: ${result.screenshots_analyzed}\n\n`
+
+      if (analysis.error) {
+        formattedContent += `⚠️ ${analysis.error}\n\n`
+        if (analysis.ocr_text) {
+          formattedContent += `**OCR Text**: ${analysis.ocr_text.substring(0, 500)}...\n`
+        }
+      } else {
+        // Page Title and Purpose
+        formattedContent += `## 📄 ${analysis.page_title || 'Untitled Page'}\n\n`
+        if (analysis.primary_purpose) {
+          formattedContent += `*${analysis.primary_purpose}*\n\n`
+        }
+
+        // Health Status
+        const healthEmoji: Record<string, string> = {
+          healthy: '✅',
+          warning: '⚠️',
+          critical: '🚨',
+          unknown: '❔'
+        }
+        formattedContent += `**Overall Health**: ${healthEmoji[analysis.health_status] || '❔'} ${analysis.health_status?.toUpperCase() || 'UNKNOWN'}\n\n`
+
+        // Critical Issues
+        if (analysis.critical_issues && analysis.critical_issues.length > 0) {
+          formattedContent += `### 🚨 Critical Issues\n\n`
+          analysis.critical_issues.forEach((issue: string) => {
+            formattedContent += `- ${issue}\n`
+          })
+          formattedContent += `\n`
+        }
+
+        // Key Metrics
+        if (analysis.key_metrics && analysis.key_metrics.length > 0) {
+          formattedContent += `### 📊 Key Metrics\n\n`
+          formattedContent += `| Metric | Value | Status | Trend |\n`
+          formattedContent += `|--------|-------|--------|-------|\n`
+          analysis.key_metrics.forEach((metric: any) => {
+            const statusEmoji: Record<string, string> = {
+              good: '✅',
+              warning: '⚠️',
+              critical: '🚨',
+              normal: '➖'
+            }
+            const trendEmoji: Record<string, string> = {
+              increasing: '↗️',
+              decreasing: '↘️',
+              stable: '→',
+              unknown: '❔'
+            }
+            formattedContent += `| ${metric.name} | **${metric.value}** | ${statusEmoji[metric.status] || '➖'} ${metric.status} | ${trendEmoji[metric.trend] || '❔'} |\n`
+          })
+          formattedContent += `\n`
+        }
+
+        // Alerts
+        if (analysis.alerts && analysis.alerts.length > 0) {
+          formattedContent += `### ⚠️ Alerts\n\n`
+          analysis.alerts.forEach((alert: any) => {
+            const severityEmoji: Record<string, string> = {
+              critical: '🚨',
+              warning: '⚠️',
+              info: 'ℹ️'
+            }
+            formattedContent += `**${severityEmoji[alert.severity] || 'ℹ️'} ${alert.severity.toUpperCase()}**: ${alert.message}\n\n`
+          })
+        }
+
+        // Charts
+        if (analysis.charts && analysis.charts.length > 0) {
+          formattedContent += `### 📈 Charts Detected\n\n`
+          analysis.charts.forEach((chart: string) => {
+            formattedContent += `- ${chart}\n`
+          })
+          formattedContent += `\n`
+        }
+
+        // Key Insights
+        if (analysis.key_insights && analysis.key_insights.length > 0) {
+          formattedContent += `### 💡 Key Insights\n\n`
+          analysis.key_insights.forEach((insight: string, idx: number) => {
+            formattedContent += `${idx + 1}. ${insight}\n`
+          })
+          formattedContent += `\n`
+        }
+
+        // Recommendations
+        if (analysis.recommendations && analysis.recommendations.length > 0) {
+          formattedContent += `### ✅ Recommendations\n\n`
+          analysis.recommendations.forEach((rec: string, idx: number) => {
+            formattedContent += `${idx + 1}. ${rec}\n`
+          })
+          formattedContent += `\n`
+        }
+      }
+
+      // Pipeline info
+      if (result.pipeline) {
+        formattedContent += `\n---\n\n`
+        formattedContent += `**Pipeline Details**:\n`
+        formattedContent += `- OCR Elements: ${result.pipeline.ocr_elements}\n`
+        formattedContent += `- OCR Text Length: ${result.pipeline.ocr_text_length} chars\n`
+        formattedContent += `- VLM Response: ${result.pipeline.vlm_response_length} chars\n`
+      }
+
+      // Display result
+      upsertMessage({
+        msgId: statusMsgId,
+        role: 'assistant',
+        content: formattedContent,
+        ts: Date.now()
+      })
+
+    } catch (error) {
+      console.error('Full analysis error:', error)
+      const errorMsgId = `assistant_${Date.now()}`
+      upsertMessage({
+        msgId: errorMsgId,
+        role: 'assistant',
+        content: `❌ Full analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}\n\n**Troubleshooting**:\n- Make sure Flask API is running: \`python packages/vision-analysis-mcp/server.py\`\n- Check that it's accessible at http://localhost:5000`,
+        ts: Date.now()
+      })
+    } finally {
+      setProcessing(false)
+    }
   }
 
   // Landing View

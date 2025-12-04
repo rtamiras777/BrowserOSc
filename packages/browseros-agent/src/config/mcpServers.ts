@@ -43,4 +43,10 @@ export const MCP_SERVERS: MCPServerConfig[] = [
     subdomain: 'notion',
     iconPath: 'assets/mcp_servers/notion.svg',
   },
+  {
+    id: 'vision-analysis',
+    name: 'Vision Analysis',
+    subdomain: 'vision-analysis',
+    iconPath: 'assets/mcp_servers/vision.svg',
+  },
 ]
