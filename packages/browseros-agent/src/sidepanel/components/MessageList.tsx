@@ -36,6 +36,7 @@ const AGENT_EXAMPLES = [
   'Read about our vision',
   'Integrate into AWS',
   'View Investigations',
+  'Onboard me',
 ]
 
 // Animation constants
@@ -158,7 +159,42 @@ export function MessageList({ messages, isProcessing = false, onScrollStateChang
     // Prevent any event propagation that might interfere
     trackFeature('example_prompt', { prompt })
 
-    // Mirror ChatInput.submitTask behavior
+    // Special handling for "Onboard me" workflow
+    if (prompt === 'Onboard me') {
+      const onboardingWorkflow = `I need you to help me onboard to our cloud service. Please follow these steps carefully:
+
+1. Navigate to https://ravi-dev.ciroos.ai/onboarding-flow
+2. Click the "Continue" button
+3. Click "Start Cloud Onboarding"
+4. Click "Add Cloud Connection"
+5. IMPORTANT: Ask me (using human input) to fill out the Role Name and select the Services I want
+6. After I provide that information, click "Next"
+7. Download the generated CloudFormation template file
+8. Open a new tab to: https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/template
+9. On the AWS CloudFormation page, click "Upload a template file"
+10. Instruct me to upload the template file you just downloaded
+
+Please execute this workflow step by step, using visual tools to interact with the pages and asking for my input when needed.`
+
+      const msgId = `user_${Date.now()}`
+      upsertMessage({ msgId, role: 'user', content: 'Onboard me', ts: Date.now() })
+      setProcessing(true)
+
+      const contextTabs = getContextTabs()
+      const tabIds = contextTabs.length > 0 ? contextTabs.map(tab => tab.id) : undefined
+
+      sendMessage(MessageType.EXECUTE_QUERY, {
+        query: onboardingWorkflow,
+        tabIds,
+        source: 'sidepanel',
+        chatMode: false
+      })
+
+      try { clearSelectedTabs() } catch { /* no-op */ }
+      return
+    }
+
+    // Normal example prompt handling
     const msgId = `user_${Date.now()}`
     upsertMessage({ msgId, role: 'user', content: prompt, ts: Date.now() })
     setProcessing(true)
