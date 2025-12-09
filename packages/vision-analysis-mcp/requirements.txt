@@ -1,14 +1,9 @@
 flask>=3.0.0
 flask-cors>=4.0.0
 
-# ML Dependencies
+# OCR Only (lightweight)
 paddleocr>=2.7.0
 paddlepaddle>=2.6.0
-transformers>=4.36.0
-torch>=2.1.0
-torchvision>=0.16.0
-accelerate>=0.25.0
-sentencepiece>=0.1.99
 
 # Image Processing
 Pillow>=10.0.0

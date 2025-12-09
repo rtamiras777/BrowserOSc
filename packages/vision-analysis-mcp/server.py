@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Vision Analysis Flask API
-Integrates PaddleOCR + InternVL3-8B + Claude Haiku for dashboard analysis.
+PaddleOCR + Claude Haiku (no heavy VLM models)
 """
 from flask import Flask, request, jsonify
 from flask_cors import CORS
@@ -9,15 +9,13 @@ import base64
 import logging
 import os
 import io
-from typing import List, Dict, Any
+from typing import Dict, Any
 from dotenv import load_dotenv
 from PIL import Image
 import numpy as np
 
-# ML Imports
+# OCR Import
 from paddleocr import PaddleOCR
-from transformers import AutoModel, AutoTokenizer
-import torch
 from anthropic import Anthropic
 
 # Load environment variables
@@ -30,44 +28,21 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)  # Enable CORS for browser extension
 
-# Global model instances (load once on startup)
+# Global instances
 ocr_model = None
-vlm_model = None
-vlm_tokenizer = None
 claude_client = None
 
 def initialize_models():
-    """Initialize all ML models on startup."""
-    global ocr_model, vlm_model, vlm_tokenizer, claude_client
+    """Initialize PaddleOCR and Claude client."""
+    global ocr_model, claude_client
 
     logger.info("Initializing models...")
 
     try:
         # Initialize PaddleOCR
         logger.info("Loading PaddleOCR...")
-        # Use minimal parameters - newer versions have different API
         ocr_model = PaddleOCR(lang='en')
         logger.info("✓ PaddleOCR loaded")
-
-        # Initialize InternVL3-8B
-        logger.info("Loading InternVL3-8B... (this may take a few minutes)")
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-
-        # Using a smaller variant for faster loading - adjust as needed
-        model_name = "OpenGVLab/InternVL2-2B"  # Smaller variant, change to InternVL3-8B if you have resources
-
-        vlm_tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            trust_remote_code=True
-        )
-        vlm_model = AutoModel.from_pretrained(
-            model_name,
-            torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-            trust_remote_code=True,
-            low_cpu_mem_usage=True
-        ).to(device).eval()
-
-        logger.info(f"✓ InternVL loaded on {device}")
 
         # Initialize Claude
         api_key = os.getenv('ANTHROPIC_API_KEY')
@@ -86,7 +61,6 @@ def initialize_models():
 
 def decode_base64_image(base64_string: str) -> Image.Image:
     """Decode base64 string to PIL Image."""
-    # Remove data URL prefix if present
     if base64_string.startswith('data:image'):
         base64_string = base64_string.split(',')[1]
 
@@ -102,20 +76,32 @@ def extract_text_with_ocr(image: Image.Image) -> Dict[str, Any]:
     image_np = np.array(image)
 
     # Run OCR
-    result = ocr_model.ocr(image_np, cls=True)
+    result = ocr_model.ocr(image_np)
 
     # Parse results
     extracted_text = []
-    for line in result[0] if result[0] else []:
-        text = line[1][0]  # Extract text
-        confidence = line[1][1]  # Extract confidence
-        bbox = line[0]  # Bounding box
+    if result and result[0]:
+        for line in result[0]:
+            # line structure: [bbox, (text, confidence)]
+            bbox = line[0]
+            text_info = line[1]
 
-        extracted_text.append({
-            "text": text,
-            "confidence": confidence,
-            "bbox": bbox
-        })
+            # Handle both tuple and string formats
+            if isinstance(text_info, tuple) and len(text_info) >= 2:
+                text = text_info[0]
+                confidence = text_info[1]
+            elif isinstance(text_info, str):
+                text = text_info
+                confidence = 1.0
+            else:
+                text = str(text_info)
+                confidence = 1.0
+
+            extracted_text.append({
+                "text": text,
+                "confidence": confidence,
+                "bbox": bbox
+            })
 
     # Concatenate all text
     full_text = " ".join([item["text"] for item in extracted_text])
@@ -127,76 +113,22 @@ def extract_text_with_ocr(image: Image.Image) -> Dict[str, Any]:
         "elements": extracted_text
     }
 
-def analyze_with_vlm(image: Image.Image, ocr_text: str) -> str:
-    """Analyze image with InternVL vision-language model."""
-    logger.info("Running VLM analysis...")
-
-    # Prepare prompt
-    prompt = f"""Analyze this dashboard/webpage screenshot.
-
-OCR extracted text:
-{ocr_text}
-
-Based on the image and text, provide:
-1. Page title or main heading
-2. Primary purpose of this page
-3. Key metrics visible (numbers, percentages, stats)
-4. Charts or visualizations present
-5. Any alerts, warnings, or error messages
-6. Overall health status (healthy/warning/critical)
-
-Be concise and focus on actionable insights."""
-
-    # Prepare inputs
-    pixel_values = vlm_model.vision_encoder.image_processor(
-        images=image,
-        return_tensors="pt"
-    ).pixel_values.to(vlm_model.device)
-
-    inputs = vlm_tokenizer(
-        prompt,
-        return_tensors="pt",
-        padding=True,
-        truncation=True,
-        max_length=512
-    ).to(vlm_model.device)
-
-    # Generate response
-    with torch.no_grad():
-        outputs = vlm_model.generate(
-            **inputs,
-            pixel_values=pixel_values,
-            max_new_tokens=512,
-            num_beams=3,
-            temperature=0.7
-        )
-
-    response = vlm_tokenizer.decode(outputs[0], skip_special_tokens=True)
-
-    logger.info("VLM analysis complete")
-    return response
-
-def analyze_with_claude(ocr_results: Dict, vlm_analysis: str, screenshot_count: int) -> Dict[str, Any]:
-    """Send combined analysis to Claude Haiku for final structured output."""
-    logger.info("Sending to Claude Haiku for final analysis...")
+def analyze_with_claude(ocr_results: Dict) -> Dict[str, Any]:
+    """Send OCR text to Claude Haiku for structured analysis."""
+    logger.info("Sending to Claude Haiku for analysis...")
 
     if not claude_client:
-        logger.warning("Claude client not initialized, returning raw results")
+        logger.warning("Claude client not initialized")
         return {
             "error": "Claude API key not configured",
-            "ocr_text": ocr_results["full_text"],
-            "vlm_analysis": vlm_analysis
+            "ocr_text": ocr_results["full_text"][:500]
         }
 
-    prompt = f"""You are analyzing a dashboard/webpage. Here's the data collected:
+    prompt = f"""You are analyzing a dashboard/webpage. Here's the OCR extracted text:
 
-OCR EXTRACTED TEXT:
 {ocr_results['full_text']}
 
-VISION MODEL ANALYSIS:
-{vlm_analysis}
-
-Based on this information, return a JSON object with this structure:
+Based on this text, return a JSON object with this structure:
 {{
   "page_title": "string - the page title",
   "primary_purpose": "string - what this page is for (1 sentence)",
@@ -216,15 +148,15 @@ Based on this information, return a JSON object with this structure:
     }}
   ],
   "charts": ["list of chart titles/types detected"],
-  "critical_issues": ["list of critical problems requiring immediate attention"],
-  "key_insights": ["important insights about system health or performance"],
+  "critical_issues": ["list of critical problems"],
+  "key_insights": ["important insights"],
   "recommendations": ["actionable recommendations"]
 }}
 
 Rules:
 - Extract max 6 key_metrics (most important only)
 - Max 3 critical_issues, 3 key_insights, 3 recommendations
-- Be specific with numbers and values
+- Be specific with numbers
 - Focus on actionable information
 - Return ONLY valid JSON, no other text"""
 
@@ -243,8 +175,17 @@ Rules:
 
         # Try to parse as JSON
         import json
-        # Remove markdown code blocks if present
-        response_text = response_text.replace('```json\n', '').replace('```', '').strip()
+        import re
+
+        # Remove markdown code blocks
+        response_text = response_text.replace('```json\n', '').replace('```json', '').replace('```', '').strip()
+
+        # Try to extract JSON if there's extra text
+        # Look for content between first { and last }
+        json_match = re.search(r'\{.*\}', response_text, re.DOTALL)
+        if json_match:
+            response_text = json_match.group(0)
+
         analysis = json.loads(response_text)
 
         logger.info("Claude analysis complete")
@@ -256,8 +197,7 @@ Rules:
             "error": f"Claude analysis failed: {str(e)}",
             "page_title": "Analysis Error",
             "health_status": "unknown",
-            "ocr_text": ocr_results["full_text"][:500],  # First 500 chars
-            "vlm_analysis": vlm_analysis[:500]
+            "ocr_text": ocr_results["full_text"][:500]
         }
 
 @app.route('/health', methods=['GET'])
@@ -265,7 +205,6 @@ def health_check():
     """Health check endpoint."""
     models_loaded = {
         "ocr": ocr_model is not None,
-        "vlm": vlm_model is not None,
         "claude": claude_client is not None
     }
 
@@ -278,9 +217,9 @@ def health_check():
 @app.route('/analyze', methods=['POST'])
 def analyze_dashboard():
     """
-    Analyze dashboard screenshots with full ML pipeline.
+    Analyze dashboard screenshots with PaddleOCR + Claude Haiku.
 
-    Pipeline: Screenshots → PaddleOCR → InternVL3-8B → Claude Haiku → Structured Analysis
+    Pipeline: Screenshot → PaddleOCR (text extraction) → Claude Haiku (analysis) → Structured JSON
     """
     try:
         data = request.get_json()
@@ -302,13 +241,13 @@ def analyze_dashboard():
         logger.info(f"Received {len(screenshots)} screenshots for analysis")
 
         # Check if models are loaded
-        if not ocr_model or not vlm_model:
+        if not ocr_model:
             return jsonify({
                 "success": False,
-                "error": "Models not loaded. Please wait for initialization."
+                "error": "OCR model not loaded. Please wait for initialization."
             }), 503
 
-        # Process first screenshot (can extend to multiple later)
+        # Process first screenshot
         screenshot_b64 = screenshots[0]
 
         # Decode image
@@ -318,11 +257,8 @@ def analyze_dashboard():
         # Step 1: Extract text with OCR
         ocr_results = extract_text_with_ocr(image)
 
-        # Step 2: Analyze with VLM
-        vlm_analysis = analyze_with_vlm(image, ocr_results["full_text"])
-
-        # Step 3: Send to Claude for final structured analysis
-        final_analysis = analyze_with_claude(ocr_results, vlm_analysis, len(screenshots))
+        # Step 2: Analyze with Claude Haiku
+        final_analysis = analyze_with_claude(ocr_results)
 
         # Return structured result
         result = {
@@ -331,8 +267,7 @@ def analyze_dashboard():
             "analysis": final_analysis,
             "pipeline": {
                 "ocr_elements": len(ocr_results["elements"]),
-                "ocr_text_length": len(ocr_results["full_text"]),
-                "vlm_response_length": len(vlm_analysis)
+                "ocr_text_length": len(ocr_results["full_text"])
             }
         }
 
@@ -352,4 +287,4 @@ if __name__ == "__main__":
 
     # Run Flask server
     logger.info("Starting Flask server...")
-    app.run(host='0.0.0.0', port=5000, debug=False)  # debug=False to avoid reloading models
+    app.run(host='0.0.0.0', port=5000, debug=False)

@@ -170,21 +170,19 @@ export function MessageList({ messages, isProcessing = false, onScrollStateChang
 5. IMPORTANT: Ask me (using human input) to fill out the Role Name and select the Services I want
 6. After I provide that information, click "Next"
 7. Download the generated CloudFormation template file
-8. Click "Next" again
-9. Open a new tab to: https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/template
-10. On the AWS CloudFormation page, click "Upload a template file"
-11. Instruct me to upload the template file you just downloaded
-12. Guide me through clicking through the AWS CloudFormation steps until completion
-13. IMPORTANT: Use human input to ask me to confirm when the AWS CloudFormation stack has been successfully submitted
-14. After confirmation, go back to the ravi-dev.ciroos.ai tab
-15. Find and fill in the following fields on the page:
-    - Configuration Name: (ask me for a friendly name for this AWS account configuration)
-    - AWS Account ID: (ask me for my 12-digit AWS account ID, e.g., 123456789012)
-    - Role ARN: (ask me for the ARN of the IAM role created, e.g., arn:aws:iam::123456789012:role/CiroosReadOnlyRole)
-    - Tags (Optional): (ask if I want to add any tags)
-16. Submit the configuration form
+8. Open a new tab to: https://us-east-1.console.aws.amazon.com/cloudformation/home?region=us-east-1#/stacks/create/template
+9. On the AWS CloudFormation page, click "Upload a template file"
+10. Instruct me to upload the template file you just downloaded
+11. Click Next 
+12. Ask User to Enter stack name and parameters as needed 
+13. click next
+14. Ask user to fill out additional setting and click Capabilities checkbox then click Next
+15. Ask user to Review and Create the stack by clicking Submit.
+16 Once stack is created collect the following information:Configuration Name, AWS Account ID, Role ARN, Tags (if set up) 
+17. Finally, return to the onboarding page and enter the collected information to complete the onboarding process.
 
-Please execute this workflow step by step, using visual tools to interact with the pages and asking for my input when needed. Make sure to keep the ravi-dev.ciroos.ai tab open while working with AWS so you can return to it.`
+
+Please execute this workflow step by step, using visual tools to interact with the pages and asking for my input when needed.`
 
       const msgId = `user_${Date.now()}`
       upsertMessage({ msgId, role: 'user', content: 'Onboard me', ts: Date.now() })
@@ -364,15 +362,15 @@ Return ONLY valid JSON, no other text.`
           data: analysisData
         })
 
-        // Rate limiting: Wait 5 seconds between API calls (except after last one)
+        // Rate limiting: Wait 1 second between API calls (except after last one)
         if (i < screenshots.length - 1) {
           upsertMessage({
             msgId: analysisMsgId,
             role: 'assistant',
-            content: `Waiting 5 seconds before next analysis...`,
+            content: `Waiting 1 second before next analysis...`,
             ts: Date.now()
           })
-          await new Promise(resolve => setTimeout(resolve, 5000))
+          await new Promise(resolve => setTimeout(resolve, 1000))
         }
       }
 

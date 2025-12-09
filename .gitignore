@@ -8,3 +8,5 @@
 nxtscape-cli-access.json
 gclient.json
 .env
+***/env
+**/visionvenv/
